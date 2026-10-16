@@ -239,3 +239,59 @@ html.reduce-motion .ticker-track { animation: none; }
     background: linear-gradient(180deg, color-mix(in oklch, var(--background) 92%, transparent) 0%, color-mix(in oklch, var(--background) 70%, transparent) 60%, transparent 100%);
   }
 }
+
+/* ── Landing page (cinematic scenes) ─────────────────────────────────────── */
+.landing { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+.landing-display {
+  font-weight: 800;
+  font-stretch: 68%;
+  line-height: 0.92;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+.landing-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3rem;
+  padding: 0 1.4rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  transition: background-color 0.25s, color 0.25s, box-shadow 0.25s, transform 0.25s;
+}
+.landing-btn:focus-visible, .landing-link:focus-visible, .landing-nav-link:focus-visible { outline: 2px solid #f0a33a; outline-offset: 3px; }
+.landing-btn-primary { background: #f0a33a; color: #0d1a26; box-shadow: 0 10px 30px -12px rgba(240, 163, 58, 0.7); }
+.landing-btn-primary:hover { background: #ffb54d; }
+.landing-btn-ghost { color: #edf1ee; box-shadow: inset 0 0 0 1px rgba(237, 241, 238, 0.35); background: rgba(13, 26, 38, 0.35); }
+.landing-btn-ghost:hover { box-shadow: inset 0 0 0 1px rgba(237, 241, 238, 0.8); }
+.landing-link, .landing-nav-link {
+  position: relative;
+  padding-bottom: 2px;
+  background: linear-gradient(currentColor, currentColor) no-repeat 0 100% / 0% 1px;
+  transition: background-size 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.2s;
+}
+.landing-link { color: #f0a33a; font-weight: 600; background-size: 100% 1px; }
+.landing-link:hover { background-size: 0% 1px; background-position: 100% 100%; }
+.landing-link-dark { color: #9a5a08; }
+.landing-nav-link { color: rgba(237, 241, 238, 0.8); }
+.landing-nav-link:hover { color: #edf1ee; background-size: 100% 1px; }
+.landing-pulse { position: relative; box-shadow: 0 0 0 2px rgba(13, 26, 38, 0.8); }
+.landing-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid currentColor;
+  animation: landing-ring 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+@keyframes landing-ring { from { transform: scale(1); opacity: 0.9; } to { transform: scale(2.6); opacity: 0; } }
+
+/* ── App pages: a short, quiet entrance when you change page ─────────────── */
+.route-enter { animation: route-enter 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@keyframes route-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-pulse::after, .route-enter { animation: none; }
+  .landing-btn, .landing-link, .landing-nav-link { transition: none; }
+}

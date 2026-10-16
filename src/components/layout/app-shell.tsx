@@ -190,7 +190,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </a>
         </nav>
         <main id="main" className="min-w-0 flex-1 px-3 py-5 sm:px-6">
-          {children}
+          {/* Re-keyed per route so each page gets one short entrance (disabled for reduced motion). */}
+          <div key={pathname} className="route-enter">
+            {children}
+          </div>
         </main>
       </div>
       <CommandPalette items={paletteItems} open={palette} onOpenChange={setPalette} />
