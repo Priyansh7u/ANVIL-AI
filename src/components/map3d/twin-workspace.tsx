@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Layers,
   Link2,
+  LocateFixed,
   Loader2,
   Maximize,
   Minimize,
@@ -44,7 +45,8 @@ import { useClientId, usePlace } from "@/hooks/use-local-state";
 import { SEVERITY_COLOR, type HazardDto, type HazardMapResponse } from "@/types/api";
 import type { FindingDto } from "@/types/research";
 import { loadElevationGrid, elevationAt, type GridLoadResult } from "./elevation";
-import { buildStyle, TERRAIN_EXAGGERATION } from "./style";
+import { buildStyle, HILLSHADE_LAYER, OPENFREEMAP_TILEJSON, TERRAIN_EXAGGERATION, TERRAIN_PROVIDERS, terrainSource, type TerrainProvider } from "./style";
+import { clampLiveBox, type LiveBuildings } from "@/lib/core/geo3d/osm-buildings";
 import { Glass, IconButton, Pill, SearchBox, SectionTitle, Stat, Toggle, type SearchResult } from "./twin-ui";
 
 // ── types ────────────────────────────────────────────────────────────────────
@@ -102,6 +104,7 @@ type Inspect =
   | { kind: "facility"; f: OsmFacility }
   | { kind: "shelter"; s: OfficialShelter }
   | { kind: "building"; height: number | null; name: string | null; at: Position }
+  | { kind: "live-building"; height: number; heightSource: string; levels: number | null; name: string | null; edited: string | null; osmId: string; at: Position }
   | { kind: "road"; cls: string | null; at: Position }
   | { kind: "cell"; depth: number; at: Position }
   | { kind: "point"; at: Position };
@@ -148,7 +151,7 @@ function prefersReducedMotion() {
 const LAYER_GROUPS: Record<LayerId, string[]> = {
   alerts: ["alerts-fill", "alerts-line", "alerts-line-approx"],
   boundary: ["boundary-line"],
-  buildings: ["building-3d", "building-flat"],
+  buildings: ["building-3d", "building-flat", "live-buildings", "live-box"],
   terrain: ["hillshade"],
   facilities: ["fac-clusters", "fac-count", "fac-points"],
   shelters: ["shelter-points"],
@@ -157,11 +160,28 @@ const LAYER_GROUPS: Record<LayerId, string[]> = {
   routes: ["route-alt", "route-best"],
 };
 
-const INSPECTABLE = ["seed-point", "shelter-points", "fac-points", "fac-clusters", "scenario-cells-3d", "scenario-cells-2d", "exposed-bldg", "alerts-fill", "building-3d", "building-flat", "roads-major", "roads-mid", "roads-minor"];
+const INSPECTABLE = ["live-buildings", "seed-point", "shelter-points", "fac-points", "fac-clusters", "scenario-cells-3d", "scenario-cells-2d", "exposed-bldg", "alerts-fill", "building-3d", "building-flat", "roads-major", "roads-mid", "roads-minor"];
 
 function addOverlays(map: MLMap) {
   const src = (id: string, extra: Record<string, unknown> = {}) => map.addSource(id, { type: "geojson", data: EMPTY as unknown as GeoJSON.GeoJSON, ...extra });
-  ["alerts", "boundary", "scenario-cells", "scenario-zone", "seed", "exposed", "routes", "shelters"].forEach((id) => src(id));
+  ["alerts", "boundary", "scenario-cells", "scenario-zone", "seed", "exposed", "routes", "shelters", "live-buildings", "live-box"].forEach((id) => src(id));
+
+  // Live OSM buildings (Overpass). Brighter = height from OSM tags; grey = default height.
+  map.addLayer(
+    {
+      id: "live-buildings",
+      type: "fill-extrusion",
+      source: "live-buildings",
+      paint: {
+        "fill-extrusion-color": ["match", ["get", "heightSource"], "height tag", "#4f7cc0", "levels tag", "#3b6aa8", "#2a3850"],
+        "fill-extrusion-height": ["to-number", ["get", "height"], 6],
+        "fill-extrusion-base": ["to-number", ["get", "minHeight"], 0],
+        "fill-extrusion-opacity": 0.95,
+      },
+    },
+    "road-labels",
+  );
+  map.addLayer({ id: "live-box", type: "line", source: "live-box", paint: { "line-color": "#22d3ee", "line-width": 1.2, "line-dasharray": [2, 3], "line-opacity": 0.6 } }, "road-labels");
   src("facilities", { cluster: true, clusterRadius: 42, clusterMaxZoom: 15 });
 
   // Official areas sit below buildings so mapped structures stay readable.
@@ -216,6 +236,21 @@ function addOverlays(map: MLMap) {
   map.addLayer({ id: "seed-point", type: "circle", source: "seed", paint: { "circle-color": "#c084fc", "circle-radius": 7, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
 }
 
+/** Replace the terrain + hillshade sources with another provider, keeping the layer order. */
+function swapTerrain(map: MLMap, provider: TerrainProvider, exaggeration: number, terrainOn: boolean) {
+  try {
+    map.setTerrain(null);
+    if (map.getLayer("hillshade")) map.removeLayer("hillshade");
+    for (const id of ["terrain", "hillshade"]) if (map.getSource(id)) map.removeSource(id);
+    map.addSource("terrain", terrainSource(provider));
+    map.addSource("hillshade", terrainSource(provider, false));
+    map.addLayer(HILLSHADE_LAYER, "water");
+    if (terrainOn) map.setTerrain({ source: "terrain", exaggeration });
+  } catch {
+    /* keep the flat map if even the fallback can't be installed */
+  }
+}
+
 function zoneFromDto(h: HazardDto): { zone: HazardZone | null; invalid: number } {
   const { polygons, invalid } = latLonRingsToPolygons(h.polygons);
   if (!polygons.length) return { zone: null, invalid };
@@ -245,6 +280,13 @@ export default function TwinWorkspace() {
   const [rightTab, setRightTab] = useState<"scenario" | "analysis" | "research">("scenario");
   const [sheet, setSheet] = useState<null | "layers" | "scenario" | "analysis" | "research">(null);
   const [copied, setCopied] = useState(false);
+  const [exaggeration, setExaggeration] = useState(TERRAIN_EXAGGERATION);
+  const [terrainProvider, setTerrainProvider] = useState<TerrainProvider>("mapterhorn");
+  const [buildingsMode, setBuildingsMode] = useState<"live" | "tiles">("live");
+  const [live, setLive] = useState<{ data: (LiveBuildings & { fetchedAt: string; cached?: boolean; stale?: boolean; error?: string }) | null; loading: boolean; error: string | null; box: { west: number; south: number; east: number; north: number } | null }>({ data: null, loading: false, error: null, box: null });
+  const [status, setStatus] = useState<Record<"basemap" | "terrain" | "buildings", { state: "loading" | "ok" | "error"; message?: string }>>({ basemap: { state: "loading" }, terrain: { state: "loading" }, buildings: { state: "loading" } });
+  const [snapshot, setSnapshot] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
   const [, setTick] = useState(0);
 
   const [sevFilter, setSevFilter] = useState<Set<Severity>>(new Set(SEVERITIES));
@@ -280,6 +322,26 @@ export default function TwinWorkspace() {
   layersRef.current = layers;
   const hazardsRef = useRef<HazardMapResponse | null>(null);
   hazardsRef.current = hazards.data;
+  const buildingsModeRef = useRef(buildingsMode);
+  buildingsModeRef.current = buildingsMode;
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  const exaggerationRef = useRef(exaggeration);
+  exaggerationRef.current = exaggeration;
+  const terrainErrors = useRef(0);
+  const terrainProviderRef = useRef<TerrainProvider>("mapterhorn");
+  const liveCtrl = useRef<AbortController | null>(null);
+
+  // OpenStreetMap snapshot date of the vector tiles, read live from the provider.
+  useEffect(() => {
+    fetch(OPENFREEMAP_TILEJSON)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { tiles?: string[] } | null) => {
+        const m = j?.tiles?.[0]?.match(/\/(\d{4})(\d{2})(\d{2})_/);
+        if (m) setSnapshot(`${m[1]}-${m[2]}-${m[3]}`);
+      })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 15_000);
@@ -395,10 +457,10 @@ export default function TwinWorkspace() {
         if (cancelled || !containerRef.current) return;
         map = new maplibregl.Map({
           container: containerRef.current,
-          style: buildStyle(),
+          style: buildStyle("mapterhorn"),
           center: [url.lon ?? start.lon, url.lat ?? start.lat],
-          zoom: url.zoom ?? (start === INDIA ? 4.2 : 12.5),
-          pitch: url.pitch ?? (url.mode === "2d" ? 0 : 55),
+          zoom: url.zoom ?? (start === INDIA ? 4.2 : 15.5),
+          pitch: url.pitch ?? (url.mode === "2d" ? 0 : 60),
           bearing: url.bearing ?? -15,
           maxPitch: 80,
           attributionControl: { compact: true },
@@ -418,9 +480,33 @@ export default function TwinWorkspace() {
           setZoom(map.getZoom());
           setReady(true);
         });
+        map.on("sourcedata", (e) => {
+          const id = (e as { sourceId?: string }).sourceId;
+          if (!map || !(e as { isSourceLoaded?: boolean }).isSourceLoaded) return;
+          if (id === "openmaptiles") setStatus((st) => (st.basemap.state === "ok" ? st : { ...st, basemap: { state: "ok" }, buildings: st.buildings.state === "error" ? st.buildings : { state: "ok" } }));
+          if (id === "terrain") setStatus((st) => (st.terrain.state === "ok" ? st : { ...st, terrain: { state: "ok", message: TERRAIN_PROVIDERS[terrainProviderRef.current].label } }));
+        });
         map.on("error", (e) => {
-          const msg = (e as { error?: { message?: string } }).error?.message ?? "";
-          setTileError(/terrarium|elevation/i.test(msg) ? "Some elevation tiles failed to load; terrain may be flat in places." : "Some map tiles failed to load. The map keeps working with what loaded.");
+          const msg = (e as { error?: { message?: string } }).error?.message ?? "error";
+          const id = (e as { sourceId?: string }).sourceId ?? "";
+          if (id === "terrain" || id === "hillshade" || /mapterhorn|terrarium|elevation/i.test(msg)) {
+            terrainErrors.current++;
+            // Fall back to the second keyless provider after repeated failures.
+            if (terrainErrors.current >= 4 && terrainProviderRef.current === "mapterhorn" && map) {
+              terrainProviderRef.current = "aws";
+              terrainErrors.current = 0;
+              swapTerrain(map, "aws", exaggerationRef.current, modeRef.current === "3d" && layersRef.current.has("terrain"));
+              setTerrainProvider("aws");
+              setStatus((st) => ({ ...st, terrain: { state: "loading", message: "Primary terrain failed; switched to AWS Terrain Tiles" } }));
+            } else if (terrainErrors.current >= 4) {
+              setStatus((st) => ({ ...st, terrain: { state: "error", message: msg.slice(0, 120) } }));
+            }
+            return;
+          }
+          if (id === "openmaptiles" || /openfreemap/i.test(msg)) {
+            setStatus((st) => ({ ...st, basemap: { state: "error", message: msg.slice(0, 120) } }));
+            setTileError("Some basemap/building tiles failed to load. The map keeps working with what loaded.");
+          }
         });
       } catch (e) {
         setEngineError(`The 3D engine failed to start: ${(e as Error).message}`);
@@ -462,7 +548,16 @@ export default function TwinWorkspace() {
       const c = JSON.stringify((f.geometry as { coordinates?: unknown }).coordinates ?? "").slice(0, 60);
       return `${prefix}:${c}`;
     };
-    if (z >= 14) {
+    const liveData = liveRef.current.data;
+    const useLive = buildingsModeRef.current === "live" && z >= 16 && liveData;
+    if (useLive) {
+      for (const f of liveData.features) {
+        if (!inView(f.geometry)) continue;
+        const id = `lb:${f.id}`;
+        heights.set(id, f.properties.height);
+        raw.push({ id, category: "building", name: f.properties.name, geometry: f.geometry });
+      }
+    } else if (z >= 14) {
       for (const f of map.querySourceFeatures("openmaptiles", { sourceLayer: "building" })) {
         if (!inView(f.geometry)) continue;
         const id = keyOf(f, "b");
@@ -500,8 +595,23 @@ export default function TwinWorkspace() {
         elevationAt(e.lngLat.lng, e.lngLat.lat).then((elev) => setCursor({ lon: e.lngLat.lng, lat: e.lngLat.lat, elev }));
       }, 250);
     };
+    let liveTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleLive = () => {
+      clearTimeout(liveTimer);
+      liveTimer = setTimeout(() => {
+        if (buildingsModeRef.current !== "live" || map.getZoom() < 16) return;
+        const b = map.getBounds();
+        const box = clampLiveBox({ west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() });
+        const prev = liveRef.current.box;
+        const c = map.getCenter();
+        // Skip refetch while the centre stays well inside the area already loaded.
+        if (prev && liveRef.current.data && c.lng > prev.west + (prev.east - prev.west) * 0.25 && c.lng < prev.east - (prev.east - prev.west) * 0.25 && c.lat > prev.south + (prev.north - prev.south) * 0.25 && c.lat < prev.north - (prev.north - prev.south) * 0.25) return;
+        void fetchLive(box);
+      }, 700);
+    };
     const onMoveEnd = () => {
       setZoom(map.getZoom());
+      scheduleLive();
       clearTimeout(collectTimer);
       collectTimer = setTimeout(() => map.once("idle", collectFeatures), 500);
       clearTimeout(urlTimer);
@@ -542,6 +652,9 @@ export default function TwinWorkspace() {
         const dto = hazardsRef.current?.hazards.find((h) => h.id === p.id);
         if (dto) return setInspect({ kind: "alert", dto });
       }
+      if (lid === "live-buildings") {
+        return setInspect({ kind: "live-building", height: Number(p.height), heightSource: String(p.heightSource), levels: p.levels == null || p.levels === "null" ? null : Number(p.levels), name: (p.name as string | null) ?? null, edited: (p.edited as string | null) ?? null, osmId: String(p.osmId), at });
+      }
       if (lid.startsWith("scenario-cells")) return setInspect({ kind: "cell", depth: Number(p.depth), at });
       if (lid === "building-3d" || lid === "building-flat" || lid === "exposed-bldg") {
         const h = Number(p.render_height ?? p.height);
@@ -572,7 +685,9 @@ export default function TwinWorkspace() {
       clearTimeout(elevTimer);
       clearTimeout(collectTimer);
       clearTimeout(urlTimer);
+      clearTimeout(liveTimer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchLive is stable (refs only)
   }, [ready, collectFeatures]);
 
 
@@ -640,20 +755,84 @@ export default function TwinWorkspace() {
     if (!map || !ready) return;
     const vis = (id: string, on: boolean) => map.getLayer(id) && map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
     (Object.keys(LAYER_GROUPS) as LayerId[]).forEach((g) => LAYER_GROUPS[g].forEach((id) => vis(id, layers.has(g))));
-    vis("building-3d", layers.has("buildings") && mode === "3d");
-    vis("building-flat", layers.has("buildings") && mode === "2d");
+    const liveOn = buildingsMode === "live" && zoom >= 16 && Boolean(live.data);
+    vis("building-3d", layers.has("buildings") && mode === "3d" && !liveOn);
+    vis("building-flat", layers.has("buildings") && mode === "2d" && !liveOn);
+    vis("live-buildings", layers.has("buildings") && liveOn);
+    vis("live-box", layers.has("buildings") && liveOn);
     vis("scenario-cells-3d", layers.has("scenario") && mode === "3d" && compare !== "baseline");
     vis("scenario-cells-2d", layers.has("scenario") && mode === "2d" && compare !== "baseline");
     for (const id of ["scenario-zone-fill", "scenario-zone-line"]) vis(id, layers.has("scenario") && compare !== "baseline");
     for (const id of LAYER_GROUPS.alerts) vis(id, layers.has("alerts") && compare !== "scenario");
+  }, [ready, layers, mode, compare, buildingsMode, zoom, live.data]);
+
+  // Terrain only changes when its inputs change (re-applying it on every move is expensive).
+  const terrainOn = layers.has("terrain");
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
     try {
-      map.setTerrain(mode === "3d" && layers.has("terrain") ? { source: "terrain", exaggeration: TERRAIN_EXAGGERATION } : null);
+      map.setTerrain(mode === "3d" && terrainOn ? { source: "terrain", exaggeration } : null);
+      if (map.getLayer("scenario-cells-3d")) map.setPaintProperty("scenario-cells-3d", "fill-extrusion-height", ["*", ["get", "depth"], exaggeration]);
     } catch {
       /* terrain unavailable */
     }
-  }, [ready, layers, mode, compare]);
+  }, [ready, mode, terrainOn, exaggeration]);
+
+  // Push live buildings to the map.
+  useEffect(() => {
+    if (!ready) return;
+    setGeo(mapRef.current, "live-buildings", (live.data as unknown as FC) ?? EMPTY);
+    const b = live.box;
+    setGeo(mapRef.current, "live-box", b ? { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[b.west, b.south], [b.east, b.south], [b.east, b.north], [b.west, b.north], [b.west, b.south]] } }] } : EMPTY);
+    if (live.data) mapRef.current?.once("idle", collectFeatures);
+  }, [ready, live.data, live.box, collectFeatures]);
 
   // ── actions ──────────────────────────────────────────────────────────────
+  async function fetchLive(box: { west: number; south: number; east: number; north: number }) {
+    liveCtrl.current?.abort();
+    const c = new AbortController();
+    liveCtrl.current = c;
+    setLive((l) => ({ ...l, loading: true, error: null }));
+    setStatus((st) => ({ ...st, buildings: { state: "loading", message: "Fetching live OSM buildings…" } }));
+    try {
+      const qs = new URLSearchParams({ west: box.west.toFixed(5), south: box.south.toFixed(5), east: box.east.toFixed(5), north: box.north.toFixed(5) });
+      const data = await apiFetch<LiveBuildings & { fetchedAt: string; cached?: boolean; stale?: boolean; error?: string; bbox: typeof box }>(`/api/osm/buildings?${qs}`, { signal: c.signal, timeoutMs: 45_000 });
+      if (c.signal.aborted) return;
+      setLive({ data, loading: false, error: data.stale ? (data.error ?? null) : null, box: data.bbox ?? box });
+      setStatus((st) => ({ ...st, buildings: { state: "ok", message: `${data.summary.count} live OSM buildings` } }));
+    } catch (e) {
+      if (c.signal.aborted || (e as ApiError).code === "ABORTED") return;
+      setLive((l) => ({ ...l, loading: false, error: (e as ApiError).message }));
+      setStatus((st) => ({ ...st, buildings: { state: "error", message: `Live buildings unavailable — showing weekly tiles. ${(e as ApiError).message}` } }));
+    }
+  }
+
+  const geolocate = () => {
+    if (!("geolocation" in navigator)) return setTileError("Location is not available in this browser. Search a place instead.");
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        // Rounded to ~1 km before it leaves the device.
+        const lat = Math.round(pos.coords.latitude * 100) / 100;
+        const lon = Math.round(pos.coords.longitude * 100) / 100;
+        try {
+          const r = await apiFetch<{ place: SearchResult }>(`/api/geo/reverse?lat=${lat}&lon=${lon}`);
+          setFocus({ ...r.place, lat, lon });
+        } catch {
+          setFocus({ label: `${lat}, ${lon}`, district: null, state: null, lat, lon });
+        }
+        setLocating(false);
+        flyTo(lon, lat, 16);
+      },
+      (err) => {
+        setLocating(false);
+        setTileError(err.code === err.PERMISSION_DENIED ? "Location permission denied — search a place instead." : "Couldn't get your location — search a place instead.");
+      },
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 300_000 },
+    );
+  };
+
   const flyTo = useCallback((lon: number, lat: number, z = 14.5) => {
     mapRef.current?.flyTo({ center: [lon, lat], zoom: z, pitch: modeRef.current === "3d" ? 60 : 0, bearing: modeRef.current === "3d" ? -20 : 0, duration: reduced.current ? 0 : 2600, essential: false });
   }, []);
@@ -664,7 +843,7 @@ export default function TwinWorkspace() {
     setInspect(null);
     setRoute((x) => ({ ...x, risks: [], to: null }));
     setGeo(mapRef.current, "routes", EMPTY);
-    flyTo(r.lon, r.lat);
+    flyTo(r.lon, r.lat, 16);
   };
 
   const useCentre = async () => {
@@ -808,8 +987,16 @@ export default function TwinWorkspace() {
   const feedLive = hzData?.feed.dataMode === "LIVE";
   const swatch = (c: string, dashed = false) => <span className={cn("inline-block h-2.5 w-4 rounded-sm", dashed && "border border-dashed bg-transparent")} style={dashed ? { borderColor: c } : { background: c }} aria-hidden />;
 
+  const statusDot = (st: "loading" | "ok" | "error") => <span className={cn("inline-block size-2 rounded-full", st === "ok" ? "bg-emerald-400" : st === "error" ? "bg-red-400" : "animate-pulse bg-amber-300")} aria-hidden />;
   const layersPanel = (
     <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-1 text-[11px]" aria-label="Map data status">
+        {([["Basemap", status.basemap], ["Buildings", status.buildings], ["Terrain", status.terrain]] as const).map(([k, v]) => (
+          <div key={k} className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1" title={v.message}>
+            {statusDot(v.state)} <span className="text-slate-300">{k}</span>
+          </div>
+        ))}
+      </div>
       <div>
         <SectionTitle right={hasArea ? <button type="button" onClick={hazards.reload} className="text-[11px] text-cyan-300 hover:underline" aria-label="Refresh official alerts"><RefreshCw className="inline size-3" /> Refresh</button> : null}>Real observations</SectionTitle>
         <Toggle
@@ -888,8 +1075,59 @@ export default function TwinWorkspace() {
 
       <div>
         <SectionTitle>Geography</SectionTitle>
-        <Toggle checked={layers.has("buildings")} onChange={(v) => toggleLayer("buildings", v)} label="OSM buildings" swatch={<Building2 className="size-3.5 text-slate-300" />} meta="Mapped footprints only. Height from OSM tags where present, otherwise a schema default." />
-        <Toggle checked={layers.has("terrain")} onChange={(v) => toggleLayer("terrain", v)} label="Terrain & hillshade" swatch={<Box className="size-3.5 text-slate-300" />} meta={`~30 m elevation (SRTM-derived), exaggerated ×${TERRAIN_EXAGGERATION} in 3D`} />
+        <Toggle
+          checked={layers.has("buildings")}
+          onChange={(v) => toggleLayer("buildings", v)}
+          label="3D buildings (OpenStreetMap)"
+          swatch={<Building2 className="size-3.5 text-slate-300" />}
+          meta={
+            buildingsMode === "live" && zoom >= 16
+              ? live.loading
+                ? "Fetching live buildings from the OSM database…"
+                : live.data
+                  ? `${live.data.summary.count} live buildings${live.data.summary.truncated ? " (limit reached)" : ""} · ${live.data.summary.withHeightTag + live.data.summary.withLevels} with mapped height · newest edit ${relativeTime(live.data.summary.newestEdit)} · fetched ${relativeTime(live.data.fetchedAt)}`
+                  : live.error ?? "Waiting for the map to settle…"
+              : zoom < 13
+                ? "Zoom in to street level (13+) to see buildings."
+                : `Weekly OSM snapshot${snapshot ? ` of ${snapshot}` : ""} (OpenFreeMap tiles)${buildingsMode === "live" ? " · zoom to 16+ for live data" : ""}`
+          }
+        />
+        <div className="ml-9 grid grid-cols-2 gap-1 rounded-lg border border-white/10 p-0.5" role="radiogroup" aria-label="Building data source">
+          {(["live", "tiles"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={buildingsMode === m}
+              onClick={() => {
+                setBuildingsMode(m);
+                if (m === "live" && zoom >= 16) {
+                  const b = mapRef.current?.getBounds();
+                  if (b) void fetchLive(clampLiveBox({ west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() }));
+                }
+              }}
+              className={cn("rounded-md py-1 text-[11px]", buildingsMode === m ? "bg-cyan-400/15 text-cyan-100" : "text-slate-400 hover:text-slate-100")}
+            >
+              {m === "live" ? "Live OSM (Overpass)" : "Weekly tiles"}
+            </button>
+          ))}
+        </div>
+        {live.error && buildingsMode === "live" ? <p className="ml-9 mt-1 text-[11px] text-amber-200">{live.error}</p> : null}
+        <p className="ml-9 mt-1 text-[10px] text-slate-500">Bright blue = height from OSM tags · dark = no height mapped (drawn at a default height).</p>
+        <Toggle
+          checked={layers.has("terrain")}
+          onChange={(v) => toggleLayer("terrain", v)}
+          label="Terrain & hillshade"
+          swatch={<Box className="size-3.5 text-slate-300" />}
+          meta={`${TERRAIN_PROVIDERS[terrainProvider].label} · ~30 m elevation · ${status.terrain.state === "ok" ? "loaded" : status.terrain.state === "error" ? `error: ${status.terrain.message ?? ""}` : status.terrain.message ?? "loading…"}`}
+        />
+        <label className="ml-9 block">
+          <span className="flex justify-between text-[11px] text-slate-400">
+            Vertical exaggeration <span className="num text-slate-200">×{exaggeration.toFixed(1)}</span>
+          </span>
+          <input type="range" min={1} max={5} step={0.1} value={exaggeration} onChange={(e) => setExaggeration(Number(e.target.value))} className="w-full accent-cyan-400" aria-label="Terrain vertical exaggeration" disabled={mode !== "3d"} />
+          <span className="text-[10px] text-slate-500">Plains such as the Ganga basin are nearly flat — raise this to see relief.</span>
+        </label>
         <Toggle checked={layers.has("exposure")} onChange={(v) => toggleLayer("exposure", v)} label="Exposed mapped features" swatch={swatch("#f59e0b")} meta="Amber = official area · purple = simulation" />
       </div>
 
@@ -1116,6 +1354,7 @@ export default function TwinWorkspace() {
           <IconButton label={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>{fullscreen ? <Minimize /> : <Maximize />}</IconButton>
           <IconButton label={copied ? "Link copied" : "Copy link to this view"} onClick={copyLink} active={copied}><Link2 /></IconButton>
           <IconButton label="Use map centre as the area" onClick={useCentre}><Crosshair /></IconButton>
+          <IconButton label="Use my location" onClick={geolocate} disabled={locating}>{locating ? <Loader2 className="animate-spin" /> : <LocateFixed />}</IconButton>
         </Glass>
         <Glass className="pointer-events-auto hidden items-center gap-2 px-3 py-2 text-[12px] md:flex">
           <span className={cn("live-dot", feedLive ? "text-red-400" : "text-amber-300")} aria-hidden />
@@ -1135,6 +1374,28 @@ export default function TwinWorkspace() {
           <Glass className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-amber-100">
             <AlertTriangle className="size-3.5" /> {tileError}
             <button type="button" aria-label="Dismiss" onClick={() => setTileError(null)}><X className="size-3.5" /></button>
+          </Glass>
+        </div>
+      ) : null}
+
+      {ready && zoom < 13 && !engineError ? (
+        <div className="absolute bottom-24 left-1/2 z-10 -translate-x-1/2 lg:bottom-12">
+          <Glass className="flex flex-wrap items-center justify-center gap-2 px-3 py-2 text-[12px]">
+            <Building2 className="size-4 text-cyan-300" /> 3D buildings appear at street level.
+            <button
+              type="button"
+              onClick={() => {
+                const f = focus && focus !== INDIA ? focus : null;
+                const c = mapRef.current?.getCenter();
+                if (f) flyTo(f.lon, f.lat, 16.2);
+                else if (c && zoom >= 8) flyTo(c.lng, c.lat, 16.2);
+                else geolocate();
+              }}
+              className="rounded-md bg-cyan-500/80 px-2.5 py-1 font-semibold text-slate-950 hover:bg-cyan-400"
+            >
+              {focus && focus !== INDIA ? `Fly to ${focus.label.split(",")[0]}` : zoom >= 8 ? "Zoom to street level" : "Use my location"}
+            </button>
+            {!(focus && focus !== INDIA) ? <span className="text-slate-400">or search a place</span> : null}
           </Glass>
         </div>
       ) : null}
@@ -1335,6 +1596,20 @@ function InspectBody({ item, official, scenarioZone, onRoute }: { item: Inspect;
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 font-medium"><Building2 className="size-4 text-slate-300" /> {item.name ?? "Mapped building"}</p>
           <p className="text-[11px] text-slate-400">{item.height != null ? `Height ~${Math.round(item.height)} m (OSM height/levels where mapped, otherwise schema default)` : "Height not available"} · © OpenStreetMap</p>
+          {insideBlock}
+        </div>
+      );
+    case "live-building":
+      return (
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 font-medium"><Building2 className="size-4 text-cyan-300" /> {item.name ?? "Building"}</p>
+          <p className="text-[11px] text-slate-400">
+            {item.heightSource === "default" ? `No height mapped — drawn at ${Math.round(item.height)} m by default` : `Height ${Math.round(item.height)} m from OSM ${item.heightSource}${item.levels ? ` (${item.levels} levels)` : ""}`}
+          </p>
+          <p className="text-[11px] text-slate-400">
+            Live from OpenStreetMap · last edited {item.edited ? relativeTime(item.edited) : "unknown"} ·{" "}
+            <a className="text-cyan-300 hover:underline" href={`https://www.openstreetmap.org/${item.osmId}`} target="_blank" rel="noopener noreferrer">{item.osmId}</a>
+          </p>
           {insideBlock}
         </div>
       );

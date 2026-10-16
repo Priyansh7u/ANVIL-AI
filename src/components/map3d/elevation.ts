@@ -2,7 +2,7 @@
 
 import { lonLatToTile } from "@/lib/core/geo3d/spatial";
 import { decodeTerrarium, type ElevationGrid } from "@/lib/core/geo3d/inundation";
-import { TERRARIUM_TILES } from "./style";
+import { TERRAIN_PROVIDERS, type TerrainProvider } from "./style";
 
 /**
  * Reads real elevation from Terrarium PNG tiles in the browser (the same tiles
@@ -13,8 +13,10 @@ import { TERRARIUM_TILES } from "./style";
 const cache = new Map<string, Promise<ImageData | null>>();
 const MAX_CACHE = 96;
 
-function tileUrl(z: number, x: number, y: number) {
-  return TERRARIUM_TILES.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
+const ORDER: TerrainProvider[] = ["mapterhorn", "aws"];
+
+function tileUrl(p: TerrainProvider, z: number, x: number, y: number) {
+  return TERRAIN_PROVIDERS[p].tiles.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
 }
 
 async function decodePng(blob: Blob): Promise<ImageData> {
@@ -27,14 +29,14 @@ async function decodePng(blob: Blob): Promise<ImageData> {
   return ctx.getImageData(0, 0, canvas.width, canvas.height);
 }
 
-function getTile(z: number, x: number, y: number, signal?: AbortSignal): Promise<ImageData | null> {
+function getTileFrom(provider: TerrainProvider, z: number, x: number, y: number, signal?: AbortSignal): Promise<ImageData | null> {
   const n = 2 ** z;
   const xx = ((x % n) + n) % n;
   if (y < 0 || y >= n) return Promise.resolve(null);
-  const key = `${z}/${xx}/${y}`;
+  const key = `${provider}/${z}/${xx}/${y}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const p = fetch(tileUrl(z, xx, y), { signal, mode: "cors" })
+  const p = fetch(tileUrl(provider, z, xx, y), { signal, mode: "cors" })
     .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`))))
     .then(decodePng)
     .catch(() => {
@@ -47,6 +49,16 @@ function getTile(z: number, x: number, y: number, signal?: AbortSignal): Promise
     if (first !== undefined) cache.delete(first);
   }
   return p;
+}
+
+/** Tile from the first provider that serves it (Mapterhorn, then AWS). */
+async function getTile(z: number, x: number, y: number, signal?: AbortSignal): Promise<ImageData | null> {
+  for (const p of ORDER) {
+    if (z > TERRAIN_PROVIDERS[p].maxzoom) continue;
+    const img = await getTileFrom(p, z, x, y, signal);
+    if (img) return img;
+  }
+  return null;
 }
 
 function samplePixel(img: ImageData, px: number, py: number): number {
@@ -65,7 +77,7 @@ export interface GridLoadResult {
 
 /** Sample a cols×rows elevation grid over a bbox, choosing the most detailed zoom that needs ≤ 16 tiles. */
 export async function loadElevationGrid(b: { west: number; south: number; east: number; north: number }, cols: number, rows: number, signal?: AbortSignal): Promise<GridLoadResult> {
-  let z = 14;
+  let z = 12;
   for (; z > 5; z--) {
     const a = lonLatToTile(b.west, b.north, z);
     const c = lonLatToTile(b.east, b.south, z);

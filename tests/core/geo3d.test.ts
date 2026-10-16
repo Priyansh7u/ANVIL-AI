@@ -273,3 +273,30 @@ describe("banded point test", () => {
     }
   });
 });
+
+describe("live OSM buildings", () => {
+  it("parses heights only from tags and labels defaults", async () => {
+    const { parseLength, buildingHeight, overpassToBuildings, clampLiveBox, liveBuildingsQuery } = await import("../../src/lib/core/geo3d/osm-buildings");
+    expect(parseLength("12")).toBe(12);
+    expect(parseLength("12.5 m")).toBe(12.5);
+    expect(parseLength("40 ft")).toBe(12.2);
+    expect(parseLength("tall")).toBeNull();
+    expect(buildingHeight({ height: "30" }).source).toBe("height tag");
+    expect(buildingHeight({ "building:levels": "5" }).height).toBe(16);
+    expect(buildingHeight({}).source).toBe("default");
+    const fc = overpassToBuildings({
+      elements: [
+        { type: "way", id: 1, timestamp: "2026-10-16T05:00:00Z", tags: { building: "yes", "building:levels": "3" }, geometry: [{ lat: 25.6, lon: 85.1 }, { lat: 25.6, lon: 85.1001 }, { lat: 25.6001, lon: 85.1001 }, { lat: 25.6, lon: 85.1 }] },
+        { type: "way", id: 2, tags: { building: "yes" }, geometry: [{ lat: 25.6, lon: 85.1 }] },
+        { type: "node", id: 3 },
+      ],
+    });
+    expect(fc.summary.count).toBe(1);
+    expect(fc.summary.invalid).toBe(1);
+    expect(fc.summary.withLevels).toBe(1);
+    expect(fc.summary.newestEdit).toBe("2026-10-16T05:00:00Z");
+    const box = clampLiveBox({ west: 85, east: 85.2, south: 25.5, north: 25.6 });
+    expect(box.east - box.west).toBeCloseTo(0.03, 6);
+    expect(liveBuildingsQuery(box)).toContain('way["building"]');
+  });
+});
