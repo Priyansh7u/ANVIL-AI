@@ -425,7 +425,7 @@ npm test
 
 ## 👥 Team
 
-**[Team Name]** — [Member 1] · [Member 2] · [Member 3] · [Member 4]
+**BUG HUNTERS** — [PRIYANSHU] · [SIMRAN] · [SHIVAM] · [SANTOSHI]
 [College / Institution]
 
 Built with ❤️ for **AzinHack'26 · Elysian Tech Fest · IOSC**
