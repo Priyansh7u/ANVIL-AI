@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Ban, FlaskConical, Loader2, RotateCcw, RouteOff } from "lucide-react";
-import type { LiveSimPlan } from "@/lib/core/live-sim";
+import { Ban, CloudLightning, FlaskConical, Loader2, RotateCcw, RouteOff, Sun, Waves, Wind } from "lucide-react";
+import type { LiveShelter, LiveSimInputs, LiveSimPlan } from "@/lib/core/live-sim";
 import { LIVE_ASSUMPTIONS } from "@/lib/core/live-sim";
 import type { Place } from "@/lib/core/types";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,15 @@ import type { ConfigResponse } from "@/types/api";
 import { MapView, type MapMarker } from "@/components/maps/map-view";
 import { EmptyState, ErrorState, SimulatedBanner, SourceLink } from "@/components/shared/status";
 import { Badge, Button, Input, Label, Skeleton } from "@/components/ui/primitives";
+import { SimLab } from "./sim-lab";
+
+/** Starting points for practice. Every number is a hypothetical input the user can change. */
+const PRESETS = [
+  { id: "cyclone", label: "Cyclone landfall", icon: Wind, evacuees: 5000, multiplier: 2.5, note: "large pre-emptive coastal evacuation" },
+  { id: "flash", label: "Flash flood at night", icon: Waves, evacuees: 2000, multiplier: 1.8, note: "fast surge, little warning" },
+  { id: "storm", label: "Severe thunderstorm", icon: CloudLightning, evacuees: 800, multiplier: 1.2, note: "short-lived, local damage" },
+  { id: "heat", label: "Heatwave cooling", icon: Sun, evacuees: 1500, multiplier: 1.3, note: "people seeking cool shelter by day" },
+] as const;
 
 interface LiveShelterView {
   id: string;
@@ -52,6 +61,15 @@ export function LiveSimulator({ place, onNeedTraining }: { place: Place; onNeedT
   const [data, setData] = useState<LiveResponse | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
+  const [preset, setPreset] = useState<string | null>(null);
+  const simInputs = useMemo<LiveSimInputs>(
+    () => ({ evacuees, assumedCapacity, closedShelterIds: closed, blockedRouteIds: blocked, demandMultiplier: multiplier }),
+    [evacuees, assumedCapacity, closed, blocked, multiplier],
+  );
+  const labShelters = useMemo<LiveShelter[]>(
+    () => (data?.shelters ?? []).map((s) => ({ id: s.id, name: s.name, publishedCapacity: s.publishedCapacity, distanceKm: s.distanceKm, durationMin: s.durationMin, sourceUrl: s.sourceUrl })),
+    [data?.shelters],
+  );
 
   useEffect(() => {
     if (place.lat == null || place.lon == null) return;
@@ -138,14 +156,32 @@ export function LiveSimulator({ place, onNeedTraining }: { place: Place; onNeedT
         <div className="panel space-y-4 p-4 lg:col-span-4">
           <div className="flex items-center justify-between">
             <p className="label-caps">Scenario inputs</p>
-            <Button size="sm" variant="ghost" onClick={() => { setClosed([]); setBlocked([]); setMultiplier(1); }}>
+            <Button size="sm" variant="ghost" onClick={() => { setClosed([]); setBlocked([]); setMultiplier(1); setPreset(null); }}>
               <RotateCcw /> Reset
             </Button>
+          </div>
+          <div>
+            <p className="mb-2 text-xs text-muted-foreground">Start from a practice scenario</p>
+            <div className="grid grid-cols-2 gap-2">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  aria-pressed={preset === p.id}
+                  title={p.note}
+                  onClick={() => { setPreset(p.id); setEvacuees(p.evacuees); setMultiplier(p.multiplier); }}
+                  className={cn("flex min-h-11 items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition-colors hover:bg-muted", preset === p.id && "border-sim bg-sim-soft text-sim")}
+                >
+                  <p.icon className="size-4 shrink-0" aria-hidden />
+                  <span>{p.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label htmlFor="evac">People to shelter</Label>
-              <Input id="evac" type="number" inputMode="numeric" min={0} max={1000000} value={evacuees} onChange={(e) => setEvacuees(Math.max(0, Number(e.target.value) || 0))} />
+              <Input id="evac" type="number" inputMode="numeric" min={0} max={1000000} value={evacuees} onChange={(e) => { setPreset(null); setEvacuees(Math.max(0, Number(e.target.value) || 0)); }} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="cap">Capacity if not published</Label>
@@ -247,6 +283,7 @@ export function LiveSimulator({ place, onNeedTraining }: { place: Place; onNeedT
               </p>
             </div>
           </div>
+          {labShelters.length ? <SimLab shelters={labShelters} inputs={simInputs} onCloseShelter={(id) => setClosed((c) => (c.includes(id) ? c : [...c, id]))} /> : null}
         </div>
       </div>
     </div>

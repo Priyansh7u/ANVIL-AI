@@ -121,4 +121,16 @@ export function usePrefs(): [UiPrefs, (patch: Partial<UiPrefs>) => void] {
 
 export function clearAllLocalData() {
   [PLACE_KEY, CLIENT_KEY, PREFS_KEY, "anvil.seenAlerts.v1", "anvil.family.v1"].forEach((k) => write(k, null));
+  // Everything else ANVIL keeps in this browser (plan, emergency bag, family card, drills) uses the same prefix.
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith("anvil.")) keys.push(k);
+    }
+    keys.forEach((k) => window.localStorage.removeItem(k));
+  } catch {
+    /* storage blocked */
+  }
+  emit();
 }

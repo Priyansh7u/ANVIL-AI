@@ -25,6 +25,7 @@ import {
   Moon,
   Search,
   Settings,
+  Siren,
   Sun,
   TriangleAlert,
   X,
@@ -50,6 +51,7 @@ const NAV_GROUPS = [
   {
     title: "Plan & act",
     items: [
+      { href: "/sos", label: "SOS & signal", icon: Siren, keywords: "emergency help call 112 location torch siren share" },
       { href: "/ask", label: "Ask ANVIL", icon: MessagesSquare, keywords: "question voice hindi chat" },
       { href: "/plan", label: "Safety plan", icon: ClipboardList, keywords: "checklist household whatsapp" },
       { href: "/nearby", label: "Nearby help", icon: Hospital, keywords: "hospital shelter police fire relief near me" },
@@ -147,7 +149,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               {prefs.theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
             </button>
-            <Link href="/watch" className="rounded-md p-2 hover:bg-muted" aria-label="Smart alerts and notifications">
+            <Link href="/sos" className="inline-flex min-h-9 items-center gap-1 rounded-full bg-danger px-3 text-xs font-bold text-white hover:bg-danger/90" aria-label="SOS: call for help and share your location">
+            <Siren className="size-3.5" aria-hidden /> SOS
+          </Link>
+          <Link href="/watch" className="rounded-md p-2 hover:bg-muted" aria-label="Smart alerts and notifications">
               <Bell className={cn("size-4", prefs.notifications && "text-primary")} />
             </Link>
           </div>

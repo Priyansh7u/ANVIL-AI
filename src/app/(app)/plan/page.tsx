@@ -1,10 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { ClipboardList, Loader2, Phone, Printer, Quote, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { Backpack, BellRing, ClipboardList, Loader2, Phone, Printer, Quote, RefreshCw, ShieldCheck, Sparkles, Timer, Users } from "lucide-react";
 import { formatDateTime } from "@/lib/utils";
-import { apiFetch, type ApiError } from "@/hooks/use-api";
+import { goBagList, readinessScore } from "@/lib/core/readiness";
+import { apiFetch, placeQuery, useApi, type ApiError } from "@/hooks/use-api";
 import { getOrCreateClientId, usePlace, usePrefs } from "@/hooks/use-local-state";
+import { useStored } from "@/hooks/use-stored";
+import type { AlertsResponse } from "@/types/api";
+import { HAZARD_LABEL } from "@/components/alerts/alert-card";
+import { Drill, type DrillRecord } from "@/components/plan/drill";
+import { cardComplete, EMPTY_CARD, FamilyCard, type FamilyCardData } from "@/components/plan/family-card";
+import { GoBag } from "@/components/plan/go-bag";
+import { ReadinessPanel } from "@/components/plan/readiness";
+import { Tabs, tabPanelProps } from "@/components/shared/tabs";
 import { SharePlan } from "@/components/shared/share-plan";
 import { HOUSEHOLD_KEY } from "@/components/dashboard/action-center";
 import { DataModeBadge, EmptyState, ErrorState, NeedsPlace, PageHeader, SourceLink } from "@/components/shared/status";
@@ -32,15 +42,52 @@ const T = {
   hi: { official: "आधिकारिक निर्देश", contacts: "आपातकालीन संपर्क", shelters: "दर्ज आश्रय स्थल", checklist: "आपके परिवार की चेकलिस्ट", advisories: "आधिकारिक पृष्ठों से सलाह" },
 };
 
+type Household = { members: number; children: number; elderly: number; mobilityNeeds: boolean; medicalNeeds: boolean; pets: boolean };
+type TabId = "plan" | "bag" | "family" | "drill";
+const DEFAULT_HOUSEHOLD: Household = { members: 4, children: 0, elderly: 0, mobilityNeeds: false, medicalNeeds: false, pets: false };
+
 export default function PlanPage() {
   const [place] = usePlace();
   const [prefs] = usePrefs();
   const [language, setLanguage] = useState<"en" | "hi">(prefs.language);
-  const [household, setHousehold] = useState({ members: 4, children: 0, elderly: 0, mobilityNeeds: false, medicalNeeds: false, pets: false });
   const [save, setSave] = useState(false);
-  const [plan, setPlan] = useState<Plan | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<TabId>("plan");
+
+  // Everything below lives only in this browser.
+  const [household, setHousehold] = useStored<Household>("anvil.household.form.v1", DEFAULT_HOUSEHOLD);
+  const [saved, setSaved] = useStored<{ placeLabel: string; plan: Plan; household: Household } | null>("anvil.plan.v1", null);
+  const [ticks, setTicks] = useStored<{ key: string; done: number[] }>("anvil.plan.ticks.v1", { key: "", done: [] });
+  const [bag, setBag] = useStored<{ days: number; packed: string[] }>("anvil.bag.v1", { days: 3, packed: [] });
+  const [card, setCard] = useStored<FamilyCardData>("anvil.familycard.v1", EMPTY_CARD);
+  const [drills, setDrills] = useStored<DrillRecord[]>("anvil.drills.v1", []);
+
+  const plan = saved && place && saved.placeLabel === place.label ? saved.plan : null;
+
+  // Live check: has an official alert arrived since this plan was made?
+  const alerts = useApi<AlertsResponse>(place ? `/api/alerts?${placeQuery(place)}&scope=local` : null, { refreshMs: 3 * 60_000 });
+  const newAlerts = useMemo(() => {
+    if (!plan || !alerts.data) return [];
+    const made = Date.parse(plan.generatedAt);
+    return alerts.data.alerts.filter(
+      (a) => a.freshness === "ACTIVE" && a.relevance !== "NONE" && ((a.issuedAt && Date.parse(a.issuedAt) > made) || (a.hazard !== "other" && !plan.activeHazards.includes(a.hazard))),
+    );
+  }, [plan, alerts.data]);
+
+  const bagItems = useMemo(() => goBagList(household, bag.days), [household, bag.days]);
+  const planKey = plan?.generatedAt ?? "";
+  const doneTicks = ticks.key === planKey ? ticks.done : [];
+  const readiness = readinessScore({
+    checklistDone: plan ? doneTicks.filter((i) => i < plan.checklist.length).length : 0,
+    checklistTotal: plan?.checklist.length ?? 0,
+    bagDone: bagItems.filter((i) => bag.packed.includes(i.id)).length,
+    bagTotal: bagItems.length,
+    familyCardComplete: cardComplete(card),
+    drillSeconds: drills.length ? Math.min(...drills.map((d) => d.seconds)) : null,
+    planAgeHours: plan ? (Date.now() - Date.parse(plan.generatedAt)) / 3_600_000 : null,
+    planOutdated: newAlerts.length > 0,
+  });
 
   if (!place) {
     return (
@@ -51,8 +98,13 @@ export default function PlanPage() {
     );
   }
 
-  const generate = async (e: React.FormEvent) => {
+  const generate = (e: React.FormEvent) => {
     e.preventDefault();
+    void runGenerate();
+  };
+
+  async function runGenerate() {
+    if (!place) return;
     try {
       // Lets the dashboard's next-steps panel tailor actions to this household (kept in this browser only).
       localStorage.setItem(HOUSEHOLD_KEY, JSON.stringify(household));
@@ -72,13 +124,14 @@ export default function PlanPage() {
           ...(save ? { clientId: getOrCreateClientId() } : {}),
         }),
       });
-      setPlan(r.plan);
+      setSaved({ placeLabel: place.label, plan: r.plan, household });
+      setTicks({ key: r.plan.generatedAt, done: [] });
     } catch (err) {
       setError((err as ApiError).message);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const num = (k: "members" | "children" | "elderly", min: number) => (
     <div className="space-y-1">
@@ -109,6 +162,59 @@ export default function PlanPage() {
         }
       />
 
+      <div className="print:hidden">
+        <ReadinessPanel
+          result={readiness}
+          status={
+            plan ? (
+              newAlerts.length ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-danger/50 bg-danger-soft px-3 py-2 text-sm text-danger" role="status">
+                  <BellRing className="size-4" aria-hidden />
+                  {newAlerts.length} new official alert{newAlerts.length === 1 ? "" : "s"} since your plan ({Array.from(new Set(newAlerts.map((a) => HAZARD_LABEL[a.hazard] ?? a.hazard))).join(", ")}).
+                  <Button size="sm" variant="danger" className="ml-auto" disabled={loading} onClick={() => void runGenerate()}>
+                    {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />} Update plan
+                  </Button>
+                </div>
+              ) : (
+                <p className="flex items-center gap-2 text-sm text-ok" role="status">
+                  <ShieldCheck className="size-4" aria-hidden /> Plan matches the live official feed{alerts.data ? ` · checked ${formatDateTime(alerts.data.retrievedAt ?? new Date().toISOString())}` : ""}
+                </p>
+              )
+            ) : null
+          }
+        />
+        <Tabs<TabId>
+          label="Safety plan sections"
+          value={tab}
+          onChange={setTab}
+          className="mb-4"
+          items={[
+            { id: "plan", label: "Action plan", icon: ClipboardList },
+            { id: "bag", label: "Emergency bag", icon: Backpack, badge: <span className="num text-xs text-muted-foreground">{bagItems.filter((i) => bag.packed.includes(i.id)).length}/{bagItems.length}</span> },
+            { id: "family", label: "Family card", icon: Users },
+            { id: "drill", label: "Drill", icon: Timer },
+          ]}
+        />
+      </div>
+
+      <AnimatePresence mode="wait" initial={false}>
+      <motion.div key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }} {...tabPanelProps(tab)}>
+      {tab === "bag" ? (
+        <GoBag
+          items={bagItems}
+          packed={bag.packed}
+          onToggle={(id) => setBag((b) => ({ ...b, packed: b.packed.includes(id) ? b.packed.filter((x) => x !== id) : [...b.packed, id] }))}
+          onReset={() => setBag((b) => ({ ...b, packed: [] }))}
+          days={bag.days}
+          onDays={(d) => setBag((b) => ({ ...b, days: d }))}
+          language={plan?.language ?? language}
+        />
+      ) : tab === "family" ? (
+        <FamilyCard card={card} onChange={setCard} placeLabel={place.label} />
+      ) : tab === "drill" ? (
+        <Drill history={drills} onRecord={(r) => setDrills((h) => [r, ...h].slice(0, 20))} onClear={() => setDrills([])} />
+      ) : (
+      <>
       <Card className="mb-4 print:hidden">
         <CardContent className="pt-5">
           <form onSubmit={generate} className="grid gap-3 sm:grid-cols-3">
@@ -130,7 +236,7 @@ export default function PlanPage() {
               Save this plan to my anonymous device ID (kept 90 days; delete anytime in Settings)
             </label>
             <Button type="submit" disabled={loading} className="sm:col-span-3 sm:w-fit">
-              {loading ? <Loader2 className="animate-spin" /> : <ClipboardList />} Generate plan for {place.label}
+              {loading ? <Loader2 className="animate-spin" /> : <ClipboardList />} {plan ? "Regenerate" : "Generate"} plan for {place.label}
             </Button>
           </form>
         </CardContent>
@@ -232,8 +338,14 @@ export default function PlanPage() {
               <ul className="space-y-2">
                 {plan.checklist.map((c, i) => (
                   <li key={i} className="flex gap-2 text-sm">
-                    <input type="checkbox" className="mt-0.5 size-4 shrink-0" aria-label={c.text} />
-                    <span>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 shrink-0 accent-[var(--ok)]"
+                      aria-label={c.text}
+                      checked={doneTicks.includes(i)}
+                      onChange={() => setTicks({ key: planKey, done: doneTicks.includes(i) ? doneTicks.filter((x) => x !== i) : [...doneTicks, i] })}
+                    />
+                    <span className={doneTicks.includes(i) ? "text-muted-foreground line-through" : undefined}>
                       {c.text}
                       {c.reason ? <span className="block text-xs text-muted-foreground">{c.reason}</span> : null}
                     </span>
@@ -246,6 +358,10 @@ export default function PlanPage() {
           <p className="rounded-md border border-danger/40 bg-danger-soft p-3 text-sm">{plan.disclaimer}</p>
         </div>
       ) : null}
+      </>
+      )}
+      </motion.div>
+      </AnimatePresence>
     </>
   );
 }

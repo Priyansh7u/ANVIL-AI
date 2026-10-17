@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { FlaskConical, RotateCcw } from "lucide-react";
 import type { SimPlan, SimScenario } from "@/lib/core/simulation";
@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 import { apiFetch, useApi, type ApiError } from "@/hooks/use-api";
 import { ErrorState, SimulatedBanner } from "@/components/shared/status";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Label, Skeleton } from "@/components/ui/primitives";
+import type { LiveShelter, LiveSimInputs } from "@/lib/core/live-sim";
+import { SimLab } from "./sim-lab";
 
 interface SimResponse {
   isSimulated: true;
@@ -92,6 +94,25 @@ export function TrainingSimulator() {
       }))
     : [];
   const unmet = plan?.unmet.reduce((n, u) => n + u.people, 0) ?? 0;
+
+  // The decision lab works on a flat list of shelters: use each shelter's population-weighted
+  // grid distance from the fictional zones as its travel distance.
+  const labShelters = useMemo<LiveShelter[]>(() => {
+    if (!scenario) return [];
+    const pop = scenario.zones.reduce((n, z) => n + z.population, 0) || 1;
+    return scenario.shelters.map((sh) => ({
+      id: sh.id,
+      name: sh.name,
+      publishedCapacity: sh.capacity,
+      distanceKm: Math.round((scenario.zones.reduce((n, z) => n + Math.hypot(z.x - sh.x, z.y - sh.y) * z.population, 0) / pop) * 10) / 10,
+      durationMin: null,
+      sourceUrl: "",
+    }));
+  }, [scenario]);
+  const labInputs = useMemo<LiveSimInputs>(
+    () => ({ evacuees: init.data?.baseline.totalEvacuees ?? 0, assumedCapacity: 300, closedShelterIds: closed, blockedRouteIds: [], demandMultiplier: multiplier }),
+    [init.data?.baseline.totalEvacuees, closed, multiplier],
+  );
 
   return (
     <>
@@ -215,6 +236,11 @@ export function TrainingSimulator() {
           </div>
         </div>
       )}
+      {labShelters.length && labInputs.evacuees > 0 ? (
+        <div className="mt-4">
+          <SimLab shelters={labShelters} inputs={labInputs} onCloseShelter={(id) => setClosed((c) => (c.includes(id) ? c : [...c, id]))} />
+        </div>
+      ) : null}
     </>
   );
 }
