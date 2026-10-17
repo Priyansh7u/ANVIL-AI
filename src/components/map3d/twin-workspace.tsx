@@ -41,11 +41,11 @@ import { FACILITY_LABEL, type FacilityKind, type OsmFacility } from "@/lib/core/
 import { STAGE_LABEL, TERMINAL_STAGES, type HazardStage } from "@/lib/core/hazard-intel";
 import { cn } from "@/lib/utils";
 import { apiFetch, placeQuery, useApi, type ApiError } from "@/hooks/use-api";
-import { useClientId, usePlace } from "@/hooks/use-local-state";
+import { useClientId, usePlace, usePrefs } from "@/hooks/use-local-state";
 import { SEVERITY_COLOR, type HazardDto, type HazardMapResponse } from "@/types/api";
 import type { FindingDto } from "@/types/research";
 import { loadElevationGrid, elevationAt, type GridLoadResult } from "./elevation";
-import { buildStyle, HILLSHADE_LAYER, OPENFREEMAP_TILEJSON, TERRAIN_EXAGGERATION, TERRAIN_PROVIDERS, terrainSource, type TerrainProvider } from "./style";
+import { applyTheme, buildStyle, fallbackStyle, hillshadeLayer, OPENFREEMAP_TILEJSON, TERRAIN_EXAGGERATION, TERRAIN_ORDER, TERRAIN_PROVIDERS, terrainSource, type MapTheme, type TerrainProvider } from "./style";
 import { clampLiveBox, type LiveBuildings } from "@/lib/core/geo3d/osm-buildings";
 import { Glass, IconButton, Pill, SearchBox, SectionTitle, Stat, Toggle, type SearchResult } from "./twin-ui";
 
@@ -237,14 +237,14 @@ function addOverlays(map: MLMap) {
 }
 
 /** Replace the terrain + hillshade sources with another provider, keeping the layer order. */
-function swapTerrain(map: MLMap, provider: TerrainProvider, exaggeration: number, terrainOn: boolean) {
+function swapTerrain(map: MLMap, provider: TerrainProvider, exaggeration: number, terrainOn: boolean, theme: MapTheme = "dark") {
   try {
     map.setTerrain(null);
     if (map.getLayer("hillshade")) map.removeLayer("hillshade");
     for (const id of ["terrain", "hillshade"]) if (map.getSource(id)) map.removeSource(id);
     map.addSource("terrain", terrainSource(provider));
     map.addSource("hillshade", terrainSource(provider, false));
-    map.addLayer(HILLSHADE_LAYER, "water");
+    map.addLayer(hillshadeLayer(theme), map.getLayer("water") ? "water" : undefined);
     if (terrainOn) map.setTerrain({ source: "terrain", exaggeration });
   } catch {
     /* keep the flat map if even the fallback can't be installed */
@@ -281,7 +281,13 @@ export default function TwinWorkspace() {
   const [sheet, setSheet] = useState<null | "layers" | "scenario" | "analysis" | "research">(null);
   const [copied, setCopied] = useState(false);
   const [exaggeration, setExaggeration] = useState(TERRAIN_EXAGGERATION);
-  const [terrainProvider, setTerrainProvider] = useState<TerrainProvider>("mapterhorn");
+  const [terrainProvider, setTerrainProvider] = useState<TerrainProvider>(TERRAIN_ORDER[0]!);
+  const [prefs] = usePrefs();
+  const theme: MapTheme = prefs.theme === "light" ? "light" : "dark";
+  const themeRef = useRef<MapTheme>(theme);
+  themeRef.current = theme;
+  const basemapOk = useRef(false);
+  const fallbackOn = useRef(false);
   const [buildingsMode, setBuildingsMode] = useState<"live" | "tiles">("live");
   const [live, setLive] = useState<{ data: (LiveBuildings & { fetchedAt: string; cached?: boolean; stale?: boolean; error?: string }) | null; loading: boolean; error: string | null; box: { west: number; south: number; east: number; north: number } | null }>({ data: null, loading: false, error: null, box: null });
   const [status, setStatus] = useState<Record<"basemap" | "terrain" | "buildings", { state: "loading" | "ok" | "error"; message?: string }>>({ basemap: { state: "loading" }, terrain: { state: "loading" }, buildings: { state: "loading" } });
@@ -329,7 +335,7 @@ export default function TwinWorkspace() {
   const exaggerationRef = useRef(exaggeration);
   exaggerationRef.current = exaggeration;
   const terrainErrors = useRef(0);
-  const terrainProviderRef = useRef<TerrainProvider>("mapterhorn");
+  const terrainProviderRef = useRef<TerrainProvider>(TERRAIN_ORDER[0]!);
   const liveCtrl = useRef<AbortController | null>(null);
 
   // OpenStreetMap snapshot date of the vector tiles, read live from the provider.
@@ -445,6 +451,7 @@ export default function TwinWorkspace() {
     }
     let cancelled = false;
     let map: MLMap | null = null;
+    let watchdog = 0;
     const url = parseViewState(new URLSearchParams(window.location.search));
     const start: Focus = place?.lat != null && place.lon != null ? { label: place.label, district: place.district, state: place.state, lat: place.lat, lon: place.lon } : INDIA;
     if (url.mode) setMode(url.mode);
@@ -457,7 +464,7 @@ export default function TwinWorkspace() {
         if (cancelled || !containerRef.current) return;
         map = new maplibregl.Map({
           container: containerRef.current,
-          style: buildStyle("mapterhorn"),
+          style: buildStyle(TERRAIN_ORDER[0], themeRef.current),
           center: [url.lon ?? start.lon, url.lat ?? start.lat],
           zoom: url.zoom ?? (start === INDIA ? 4.2 : 15.5),
           pitch: url.pitch ?? (url.mode === "2d" ? 0 : 60),
@@ -472,18 +479,35 @@ export default function TwinWorkspace() {
         map.on("load", () => {
           if (!map) return;
           addOverlays(map);
-          try {
-            map.setSky({ "sky-color": "#0b1424", "horizon-color": "#13233d", "fog-color": "#070d1a", "sky-horizon-blend": 0.6, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.4 });
-          } catch {
-            /* sky is cosmetic */
-          }
+          applyTheme(map, themeRef.current);
           setZoom(map.getZoom());
           setReady(true);
         });
+
+        // If the vector basemap never arrives (blocked network, CDN outage), switch to a raster
+        // basemap that keeps terrain, live OSM buildings and every overlay working.
+        const switchToFallback = (reason: string) => {
+          if (!map || fallbackOn.current || basemapOk.current) return;
+          fallbackOn.current = true;
+          setReady(false);
+          map.once("style.load", () => {
+            if (!map) return;
+            addOverlays(map);
+            applyTheme(map, themeRef.current);
+            setStatus((st) => ({ ...st, basemap: { state: "ok", message: "Raster fallback (CARTO / OSM)" }, buildings: { state: "loading", message: "Use “Live OSM buildings” for 3D buildings in fallback mode" } }));
+            setReady(true);
+          });
+          map.setStyle(fallbackStyle(terrainProviderRef.current, themeRef.current));
+          setTileError(`Vector basemap unavailable (${reason}); switched to a raster basemap. Live OSM buildings, terrain and overlays still work.`);
+        };
+        watchdog = window.setTimeout(() => switchToFallback("timed out"), 15_000);
         map.on("sourcedata", (e) => {
           const id = (e as { sourceId?: string }).sourceId;
           if (!map || !(e as { isSourceLoaded?: boolean }).isSourceLoaded) return;
-          if (id === "openmaptiles") setStatus((st) => (st.basemap.state === "ok" ? st : { ...st, basemap: { state: "ok" }, buildings: st.buildings.state === "error" ? st.buildings : { state: "ok" } }));
+          if (id === "openmaptiles") {
+            basemapOk.current = true;
+            setStatus((st) => (st.basemap.state === "ok" ? st : { ...st, basemap: { state: "ok" }, buildings: st.buildings.state === "error" ? st.buildings : { state: "ok" } }));
+          }
           if (id === "terrain") setStatus((st) => (st.terrain.state === "ok" ? st : { ...st, terrain: { state: "ok", message: TERRAIN_PROVIDERS[terrainProviderRef.current].label } }));
         });
         map.on("error", (e) => {
@@ -491,19 +515,35 @@ export default function TwinWorkspace() {
           const id = (e as { sourceId?: string }).sourceId ?? "";
           if (id === "terrain" || id === "hillshade" || /mapterhorn|terrarium|elevation/i.test(msg)) {
             terrainErrors.current++;
-            // Fall back to the second keyless provider after repeated failures.
-            if (terrainErrors.current >= 4 && terrainProviderRef.current === "mapterhorn" && map) {
-              terrainProviderRef.current = "aws";
+            // Fall back to the next keyless provider after repeated failures; if all fail, go flat
+            // rather than leaving a broken terrain mesh.
+            if (terrainErrors.current >= 4 && map) {
+              const next = TERRAIN_ORDER[TERRAIN_ORDER.indexOf(terrainProviderRef.current) + 1];
               terrainErrors.current = 0;
-              swapTerrain(map, "aws", exaggerationRef.current, modeRef.current === "3d" && layersRef.current.has("terrain"));
-              setTerrainProvider("aws");
-              setStatus((st) => ({ ...st, terrain: { state: "loading", message: "Primary terrain failed; switched to AWS Terrain Tiles" } }));
-            } else if (terrainErrors.current >= 4) {
-              setStatus((st) => ({ ...st, terrain: { state: "error", message: msg.slice(0, 120) } }));
+              if (next) {
+                terrainProviderRef.current = next;
+                swapTerrain(map, next, exaggerationRef.current, modeRef.current === "3d" && layersRef.current.has("terrain"), themeRef.current);
+                setTerrainProvider(next);
+                setStatus((st) => ({ ...st, terrain: { state: "loading", message: `Terrain source failed; switched to ${TERRAIN_PROVIDERS[next].label}` } }));
+              } else {
+                try {
+                  map.setTerrain(null);
+                  if (map.getLayer("hillshade")) map.setLayoutProperty("hillshade", "visibility", "none");
+                } catch {
+                  /* already flat */
+                }
+                terrainProviderRef.current = TERRAIN_ORDER[TERRAIN_ORDER.length - 1]!;
+                terrainErrors.current = -1_000_000; // stop retrying
+                setStatus((st) => ({ ...st, terrain: { state: "error", message: "Elevation tiles unreachable — showing a flat map" } }));
+              }
             }
             return;
           }
           if (id === "openmaptiles" || /openfreemap/i.test(msg)) {
+            if (!basemapOk.current) {
+              switchToFallback(msg.slice(0, 60));
+              return;
+            }
             setStatus((st) => ({ ...st, basemap: { state: "error", message: msg.slice(0, 120) } }));
             setTileError("Some basemap/building tiles failed to load. The map keeps working with what loaded.");
           }
@@ -515,6 +555,7 @@ export default function TwinWorkspace() {
 
     return () => {
       cancelled = true;
+      window.clearTimeout(watchdog);
       map?.remove();
       mapRef.current = null;
       setReady(false);
@@ -558,7 +599,7 @@ export default function TwinWorkspace() {
         raw.push({ id, category: "building", name: f.properties.name, geometry: f.geometry });
       }
     } else if (z >= 14) {
-      for (const f of map.querySourceFeatures("openmaptiles", { sourceLayer: "building" })) {
+      for (const f of map.getSource("openmaptiles") ? map.querySourceFeatures("openmaptiles", { sourceLayer: "building" }) : []) {
         if (!inView(f.geometry)) continue;
         const id = keyOf(f, "b");
         const h = Number(f.properties?.render_height);
@@ -567,7 +608,7 @@ export default function TwinWorkspace() {
       }
     }
     if (z >= 11) {
-      for (const f of map.querySourceFeatures("openmaptiles", { sourceLayer: "transportation" })) {
+      for (const f of map.getSource("openmaptiles") ? map.querySourceFeatures("openmaptiles", { sourceLayer: "transportation" }) : []) {
         const cls = String(f.properties?.class ?? "");
         if (["ferry", "path", "track", "rail", "transit"].includes(cls) || !inView(f.geometry)) continue;
         raw.push({ id: keyOf(f, "r"), category: "road", name: null, geometry: f.geometry });
@@ -765,6 +806,13 @@ export default function TwinWorkspace() {
     for (const id of ["scenario-zone-fill", "scenario-zone-line"]) vis(id, layers.has("scenario") && compare !== "baseline");
     for (const id of LAYER_GROUPS.alerts) vis(id, layers.has("alerts") && compare !== "scenario");
   }, [ready, layers, mode, compare, buildingsMode, zoom, live.data]);
+
+  // Follow the app's light/dark theme without rebuilding the map.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    applyTheme(map, theme);
+  }, [ready, theme]);
 
   // Terrain only changes when its inputs change (re-applying it on every move is expensive).
   const terrainOn = layers.has("terrain");
@@ -1319,7 +1367,7 @@ export default function TwinWorkspace() {
 
   // ── layout ───────────────────────────────────────────────────────────────
   return (
-    <div ref={wrapRef} className={cn("relative -mx-3 -my-5 overflow-hidden bg-[#070d1a] text-slate-100 sm:-mx-6", fullscreen ? "h-dvh" : "h-[calc(100dvh-5.5rem)] min-h-[520px]")}>
+    <div ref={wrapRef} className={cn("relative -mx-3 -my-5 overflow-hidden text-slate-100 sm:-mx-6", theme === "light" ? "twin-light bg-[#f4f2ec]" : "bg-[#070d1a]", fullscreen ? "h-dvh" : "h-[calc(100dvh-5.5rem)] min-h-[520px]")}>
       <div ref={containerRef} className="absolute inset-0" role="application" aria-label="3D map. Use arrow keys to pan, plus and minus to zoom, shift with arrows to rotate and tilt." />
 
       {engineError ? (

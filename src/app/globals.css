@@ -322,3 +322,23 @@ html.reduce-motion .ticker-track { animation: none; }
   .landing-pulse::after, .route-enter { animation: none; }
   .landing-btn, .landing-link, .landing-nav-link { transition: none; }
 }
+
+/* ── 3D map: light theme. The workspace UI is authored dark; these remap its glass panels and text. ── */
+.twin-light { color: #20243a; }
+.twin-light .bg-slate-950\/75, .twin-light .bg-slate-950\/80, .twin-light .bg-slate-950\/85 { background-color: rgb(255 255 255 / 0.86); }
+.twin-light .bg-slate-950\/95, .twin-light .bg-slate-900 { background-color: rgb(255 255 255 / 0.97); }
+.twin-light .shadow-black\/40 { --tw-shadow-color: rgb(32 36 58 / 0.18); }
+.twin-light .text-slate-50, .twin-light .text-slate-100, .twin-light .text-slate-200, .twin-light .text-white { color: #20243a; }
+.twin-light .text-slate-300 { color: #3d4257; }
+.twin-light .text-slate-400 { color: #565b73; }
+.twin-light .text-slate-500 { color: #6b7088; }
+.twin-light .placeholder\:text-slate-500::placeholder { color: #8a8fa5; }
+.twin-light .text-cyan-50, .twin-light .text-cyan-100, .twin-light .text-cyan-200, .twin-light .text-cyan-300 { color: #0e6f7f; }
+.twin-light .border-white\/5, .twin-light .border-white\/10, .twin-light .border-white\/15 { border-color: rgb(32 36 58 / 0.12); }
+.twin-light .border-white\/20, .twin-light .border-white\/25, .twin-light .border-white\/30 { border-color: rgb(32 36 58 / 0.22); }
+.twin-light .bg-white\/5, .twin-light .bg-white\/\[0\.03\] { background-color: rgb(32 36 58 / 0.04); }
+.twin-light .bg-white\/10, .twin-light .bg-white\/15 { background-color: rgb(32 36 58 / 0.08); }
+.twin-light .hover\:bg-white\/5:hover { background-color: rgb(32 36 58 / 0.05); }
+.twin-light .hover\:bg-white\/10:hover { background-color: rgb(32 36 58 / 0.09); }
+.twin-light .hover\:text-slate-100:hover { color: #20243a; }
+.twin-light .maplibregl-ctrl-group { background: #fff; }

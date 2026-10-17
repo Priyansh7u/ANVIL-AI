@@ -13,7 +13,7 @@ import { TERRAIN_PROVIDERS, type TerrainProvider } from "./style";
 const cache = new Map<string, Promise<ImageData | null>>();
 const MAX_CACHE = 96;
 
-const ORDER: TerrainProvider[] = ["mapterhorn", "aws"];
+const ORDER: TerrainProvider[] = ["aws", "mapterhorn"];
 
 function tileUrl(p: TerrainProvider, z: number, x: number, y: number) {
   return TERRAIN_PROVIDERS[p].tiles.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
