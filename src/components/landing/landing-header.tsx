@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ScrollProgress } from "./motion-kit";
 
 const LINKS = [
   { href: "/national", label: "National picture" },
@@ -11,6 +12,7 @@ const LINKS = [
   { href: "/research", label: "Research" },
   { href: "/dashboard", label: "Command center" },
 ];
+
 
 /** Transparent over the hero, solid once the page moves. */
 export function LandingHeader() {
@@ -24,12 +26,13 @@ export function LandingHeader() {
   }, []);
 
   return (
-    <header className={cn("fixed inset-x-0 top-0 z-50 transition-colors duration-300", solid || open ? "bg-[#0d1a26]/90 backdrop-blur-md" : "bg-transparent")}>
+    <header className={cn("fixed inset-x-0 top-0 z-50 transition-colors duration-300", solid || open ? "bg-[rgba(7,15,24,0.78)] backdrop-blur-xl" : "bg-transparent")}>
+      <ScrollProgress className="absolute inset-x-0 bottom-0 h-px bg-[var(--l-accent)]" />
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 text-[#edf1ee] sm:px-10">
         <Link href="/" className="flex items-center gap-2" aria-label="ANVIL home">
           <svg viewBox="0 0 32 32" className="size-8" aria-hidden>
-            <rect width="32" height="32" rx="8" fill="#f0a33a" />
-            <path d="M6 11h17c0 2.8 1.6 4.4 3 5v1h-6l-1.5 3H21v3H11v-3h2.5L12 17H9c-1.7 0-3-1.3-3-3z" fill="#0d1a26" />
+            <rect width="32" height="32" rx="8" fill="var(--l-accent)" />
+            <path d="M6 11h17c0 2.8 1.6 4.4 3 5v1h-6l-1.5 3H21v3H11v-3h2.5L12 17H9c-1.7 0-3-1.3-3-3z" fill="var(--l-bg)" />
           </svg>
           <span className="text-xl font-extrabold" style={{ fontStretch: "75%" }}>ANVIL</span>
         </Link>
@@ -37,6 +40,7 @@ export function LandingHeader() {
           {LINKS.map((l) => (
             <Link key={l.href} href={l.href} className="landing-nav-link">{l.label}</Link>
           ))}
+          <Link href="/onboarding" className="landing-btn landing-btn-primary !min-h-10 !px-4 text-sm">Get started</Link>
         </nav>
         <button type="button" className="rounded-md p-2 md:hidden" aria-label={open ? "Close menu" : "Open menu"} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
           {open ? <X className="size-5" /> : <Menu className="size-5" />}

@@ -18,7 +18,7 @@ export function LiveNow({ data }: { data: NationalResponse | null }) {
   const latest = data?.latest.slice(0, 5) ?? [];
 
   return (
-    <section ref={root} className="relative overflow-hidden bg-[#0d1a26] text-[#edf1ee]" aria-labelledby="live-h">
+    <section ref={root} className="relative overflow-hidden bg-[var(--l-bg)] text-[var(--l-ink)]" aria-labelledby="live-h">
       <div className="live-bg pointer-events-none absolute inset-0 bg-[radial-gradient(80%_60%_at_80%_100%,rgba(240,163,58,0.18),transparent_70%)]" />
       <div className="relative mx-auto max-w-7xl px-5 py-28 sm:px-10">
         <h2 id="live-h" className="landing-display max-w-[16ch] text-[clamp(2.4rem,6vw,5rem)]">Issued by the authorities, in the last few hours.</h2>
@@ -52,6 +52,11 @@ export function LiveNow({ data }: { data: NationalResponse | null }) {
             In an emergency call <a href="tel:112" className="font-semibold text-[#ff8a8f]">112</a>.
           </p>
         </div>
+      </div>
+      <div aria-hidden className="relative mx-auto max-w-7xl overflow-hidden px-5 sm:px-10">
+        <p className="landing-display select-none bg-[linear-gradient(180deg,rgba(237,241,238,0.16),rgba(237,241,238,0.02))] bg-clip-text text-[clamp(5rem,24vw,22rem)] leading-[0.8] text-transparent">
+          ANVIL
+        </p>
       </div>
       <footer className="relative border-t border-white/10">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-5 py-6 text-xs text-[#7e8f8f] sm:flex-row sm:justify-between sm:px-10">

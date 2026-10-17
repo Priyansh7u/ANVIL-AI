@@ -73,7 +73,7 @@ export function LayerStack({ data }: { data: NationalResponse | null }) {
   });
 
   return (
-    <section ref={root} className="relative bg-[#0d1a26] text-[#edf1ee]" aria-labelledby="stack-h">
+    <section ref={root} className="relative bg-[var(--l-bg)] text-[var(--l-ink)]" aria-labelledby="stack-h">
       <div className="stack-pin mx-auto grid min-h-[100svh] max-w-7xl items-center gap-10 px-5 py-20 sm:px-10 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <div>
           <h2 id="stack-h" className="landing-display text-[clamp(2.4rem,5.5vw,4.6rem)]">One place, read in four layers.</h2>

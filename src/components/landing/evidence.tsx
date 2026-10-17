@@ -20,7 +20,7 @@ export function Evidence() {
   });
 
   return (
-    <section ref={root} className="relative bg-[#0d1a26] text-[#edf1ee]" aria-labelledby="ev-h">
+    <section ref={root} className="relative bg-[var(--l-bg)] text-[var(--l-ink)]" aria-labelledby="ev-h">
       <div className="mx-auto grid max-w-7xl items-center gap-14 px-5 py-28 sm:px-10 md:grid-cols-2">
         <div>
           <h2 id="ev-h" className="landing-display max-w-[14ch] text-[clamp(2.4rem,5.5vw,4.6rem)]">A shelter is listed only if its sentence is on the page.</h2>

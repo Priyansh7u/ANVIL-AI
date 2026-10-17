@@ -241,7 +241,34 @@ html.reduce-motion .ticker-track { animation: none; }
 }
 
 /* ── Landing page (cinematic scenes) ─────────────────────────────────────── */
-.landing { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+.landing {
+  /* Landing tokens: one place for the cinematic palette. */
+  --l-bg: #070f18;
+  --l-bg-2: #0b1621;
+  --l-card: #0f1d2b;
+  --l-ink: #edf1ee;
+  --l-soft: #b8c4c1;
+  --l-mute: #8a9b9b;
+  --l-accent: #f0a33a;
+  --l-accent-soft: rgba(240, 163, 58, 0.14);
+  --l-teal: #5cc8be;
+  --l-teal-soft: rgba(92, 200, 190, 0.14);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+}
+.landing ::selection { background: rgba(240, 163, 58, 0.35); color: #fff; }
+.landing-bar { background: linear-gradient(90deg, var(--l-accent), #ffcf7a); }
+/* Film grain over the whole page: static, decorative, ignored by assistive tech. */
+.landing-grain::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
 .landing-display {
   font-weight: 800;
   font-stretch: 68%;
