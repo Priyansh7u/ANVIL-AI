@@ -425,8 +425,7 @@ npm test
 
 ## 👥 Team
 
-**BUG HUNTERS** — [PRIYANSHU] · [SIMRAN] · [SHIVAM] · [SANTOSHI]
-[College / Institution]
+**BUG HUNTERS** — [PRIYANSHU] · [SIMRAN] · [SHIVAM] · [SANTOSHI] University School of Automation and Robotics 
 
 Built with ❤️ for **AzinHack'26 · Elysian Tech Fest · IOSC**
 
